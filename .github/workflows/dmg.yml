@@ -1,0 +1,83 @@
+name: DMG
+
+# Builds Soundboard.dmg on every push and pull request. Pushing a v* tag (v1.0.0)
+# also publishes the DMG as a GitHub release.
+#
+# Pushes to main and tags are signed and notarized when these repository secrets exist:
+#   MACOS_CERTIFICATE           base64 of a "Developer ID Application" .p12 export
+#   MACOS_CERTIFICATE_PASSWORD  password of that .p12
+#   APPLE_ID                    Apple ID email of the developer account
+#   APPLE_APP_PASSWORD          app-specific password for that Apple ID
+#   APPLE_TEAM_ID               10-character team ID
+# Without them the DMG is ad hoc signed and Gatekeeper blocks it on other Macs.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    runs-on: macos-15
+    env:
+      SIGNED: ${{ github.event_name != 'pull_request' && secrets.MACOS_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Import signing certificate
+        if: env.SIGNED == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | grep -o '"Developer ID Application[^"]*"' | head -1 | tr -d '"')"
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build app
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then export VERSION="${GITHUB_REF_NAME#v}"; fi
+          ./build.sh
+
+      - name: Create DMG
+        run: |
+          mkdir build/dmg
+          cp -R build/Soundboard.app build/dmg/
+          ln -s /Applications build/dmg/Applications
+          hdiutil create -volname Soundboard -srcfolder build/dmg -format UDZO build/Soundboard.dmg
+
+      - name: Sign and notarize DMG
+        if: env.SIGNED == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          codesign --timestamp --sign "$SIGN_IDENTITY" build/Soundboard.dmg
+          xcrun notarytool submit build/Soundboard.dmg \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple build/Soundboard.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Soundboard
+          path: build/Soundboard.dmg
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" build/Soundboard.dmg --title "$GITHUB_REF_NAME" --generate-notes
