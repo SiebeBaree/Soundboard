@@ -36,7 +36,7 @@ GitHub Actions builds a DMG on every push. Push a `v*` tag to publish it as a re
 git tag v1.0.0 && git push origin v1.0.0
 ```
 
-Signing and notarization need five repository secrets. The workflow file lists them.
+Signing and notarization use a Developer ID .p12 and an App Store Connect API key. The workflow file lists the secret names.
 
 ## License
 

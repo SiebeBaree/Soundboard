@@ -4,11 +4,11 @@ name: DMG
 # also publishes the DMG as a GitHub release.
 #
 # Pushes to main and tags are signed and notarized when these repository secrets exist:
-#   MACOS_CERTIFICATE           base64 of a "Developer ID Application" .p12 export
+#   MACOS_CERTIFICATE_P12       base64 of the "Developer ID Application" .p12
 #   MACOS_CERTIFICATE_PASSWORD  password of that .p12
-#   APPLE_ID                    Apple ID email of the developer account
-#   APPLE_APP_PASSWORD          app-specific password for that Apple ID
-#   APPLE_TEAM_ID               10-character team ID
+#   APPSTORE_API_KEY_P8         contents of the App Store Connect API key (.p8)
+#   APPSTORE_API_KEY_ID         key ID of that API key
+#   APPSTORE_API_ISSUER_ID      issuer ID of that API key
 # Without them the DMG is ad hoc signed and Gatekeeper blocks it on other Macs.
 
 on:
@@ -25,19 +25,19 @@ jobs:
   dmg:
     runs-on: macos-15
     env:
-      SIGNED: ${{ github.event_name != 'pull_request' && secrets.MACOS_CERTIFICATE != '' }}
+      SIGNED: ${{ github.event_name != 'pull_request' && secrets.MACOS_CERTIFICATE_P12 != '' }}
     steps:
       - uses: actions/checkout@v5
 
       - name: Import signing certificate
         if: env.SIGNED == 'true'
         env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
           KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
           KEYCHAIN_PASSWORD="$(uuidgen)"
-          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
@@ -62,13 +62,14 @@ jobs:
       - name: Sign and notarize DMG
         if: env.SIGNED == 'true'
         env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPSTORE_API_KEY_P8: ${{ secrets.APPSTORE_API_KEY_P8 }}
+          APPSTORE_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          APPSTORE_API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
         run: |
           codesign --timestamp --sign "$SIGN_IDENTITY" build/Soundboard.dmg
+          echo "$APPSTORE_API_KEY_P8" > "$RUNNER_TEMP/api_key.p8"
           xcrun notarytool submit build/Soundboard.dmg \
-            --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+            --key "$RUNNER_TEMP/api_key.p8" --key-id "$APPSTORE_API_KEY_ID" --issuer "$APPSTORE_API_ISSUER_ID" --wait
           xcrun stapler staple build/Soundboard.dmg
 
       - uses: actions/upload-artifact@v4
